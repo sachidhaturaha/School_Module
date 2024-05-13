@@ -194,6 +194,131 @@ app.post('/create-user', upload.single('image'),authenticateToken, checkRole(['1
     });
 });
 
+// Get all users - Restricted based on the user's role
+app.get('/read_users', authenticateToken, (req, res) => {
+    let query = 'SELECT * FROM users';  // Default query for superuser
+
+    // Adjust query based on role
+    console.log(req.user.role_id);
+    if (req.user.role_id.toString() === '1') {  // Superuser
+        query = 'SELECT * FROM users';
+        // No change needed, can view all
+    } else if (req.user.role_id.toString() === '2') {  // Principal
+        query = 'SELECT * FROM users WHERE role_id IN (2, 3, 4)';  // Can view other principals, teachers, and students
+    } else if (req.user.role_id.toString() === '3') {  // Teacher
+        query = 'SELECT * FROM users WHERE role_id IN (3, 4)';  // Can only view students
+    } else if (req.user.role_id.toString() === '4') {  // Student
+        query = 'SELECT * FROM users WHERE role_id = 4'; 
+    } 
+
+    // Execute the query
+    db.query(query, (err, results) => {
+        if (err) {
+            return res.status(500).json({ error: 'Database error: ' + err.message });
+        }
+        res.json(results);
+    });
+});
+
+// Route to update a user 
+app.put('/update_user/:id', upload.single('image'), authenticateToken, (req, res) => {
+    const { id } = req.params;
+    const { name, phone, age, city, email, password, role_id } = req.body;
+
+    // First, check if the user has permission to update this user
+    db.query('SELECT role_id FROM users WHERE id = ?', [id], (err, results) => {
+        if (err) {
+            return res.status(500).json({ error: 'Database error: ' + err.message });
+        }
+        if (results.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const userRoleToUpdate = results[0].role_id;
+        const allowedRolesToUpdate = {
+            '1': ['1', '2', '3', '4'], // Superuser can update anyone
+            '2': ['2', '3', '4'], // Principal can update principal, teachers and students
+            '3': ['3','4'], // Teacher can update teachers and students
+        };
+
+        if (!allowedRolesToUpdate[req.user.role_id].includes(String(userRoleToUpdate))) {
+            return res.status(403).json({ error: 'You do not have permission to update this user' });
+        }
+
+        // Hash the new password if it's provided, otherwise skip
+        if (password) {
+            bcrypt.hash(password, 10, (err, hash) => {
+                if (err) {
+                    return res.status(500).json({ error: 'Error hashing password' });
+                }
+                executeUpdate(hash);
+            });
+        } else {
+            executeUpdate(null);  // No new password provided, don't update the password field
+        }
+
+        // Function to execute the update query
+        function executeUpdate(hashedPassword) {
+            let updateQuery = 'UPDATE users SET name = ?, phone = ?, age = ?, city = ?, email = ?' 
+                + (hashedPassword ? ', password = ?' : '') + ', role_id = ? WHERE id = ?';
+            let queryParams = [name, phone, age, city, email].concat(
+                hashedPassword ? [hashedPassword] : []
+            ).concat([role_id, id]);
+
+            // Update user details in the database
+            db.query(updateQuery, queryParams, (err, result) => {
+                if (err) {
+                    return res.status(500).json({ error: 'Database error: ' + err.message });
+                }
+                if (result.affectedRows === 0) {
+                    return res.status(404).json({ error: 'No changes made to the user' });
+                }
+                res.json({ message: 'User updated successfully' });
+            });
+        }
+    });
+});
+
+
+// Delete a user - Conditional based on role
+app.delete('/delete_user/:id', authenticateToken, (req, res) => {
+    const { id } = req.params;
+
+    db.query('SELECT role_id FROM users WHERE id = ?', [id], (err, results) => {
+        if (err) {
+            return res.status(500).json({ error: 'Database error: ' + err.message });
+        }
+        if (results.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const userRoleToDelete = results[0].role_id;
+        const allowedRolesToDelete = {
+            '1': ['1', '2', '3', '4'], // Superuser can delete anyone
+            '2': ['2', '3', '4'], // Principal can delete principal, teachers and students
+            '3': ['3','4'], // Teacher can delete teachers and students
+        };
+        if (!allowedRolesToDelete[req.user.role_id].includes(String(userRoleToDelete))) {
+            return res.status(403).json({ error: 'You do not have permission to update this user' });
+        }
+
+        else {
+            // Execute delete query
+            db.query('DELETE FROM users WHERE id = ?', [id], (err, result) => {
+                if (err) {
+                    return res.status(500).json({ error: 'Database error deleting user' });
+                }
+                if (result.affectedRows === 0) {
+                    return res.status(404).json({ error: 'User not found' });
+                }
+                res.json({ message: 'User deleted successfully' });
+            });
+        }
+    });
+});
+
+
+
 
 // Route for a teacher to create a class
 app.post('/create-class', checkRole(['teacher']), function(req, res) {
